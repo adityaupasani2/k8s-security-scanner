@@ -1,0 +1,115 @@
+---
+# POD 1: VULNERABLE NGINX - Multiple critical issues
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vulnerable-nginx
+  namespace: default
+  labels:
+    app: nginx
+    security: vulnerable
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest                    # ❌ Using :latest tag
+    securityContext:
+      privileged: true                     # ❌ Privileged mode enabled
+      runAsUser: 0                         # ❌ Running as root
+      allowPrivilegeEscalation: true       # ❌ Can escalate privileges
+    env:
+    - name: DATABASE_PASSWORD              # ❌ Secret in environment variable
+      value: "admin123"
+    - name: API_KEY
+      value: "sk-1234567890"
+    # ❌ No resource limits defined
+
+---
+# POD 2: PARTIALLY SECURE NGINX - Some issues
+apiVersion: v1
+kind: Pod
+metadata:
+  name: partially-secure-nginx
+  namespace: default
+  labels:
+    app: nginx
+    security: partial
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21                      # ✅ Specific version tag
+    securityContext:
+      runAsUser: 0                         # ❌ Still running as root
+      allowPrivilegeEscalation: false      # ✅ No privilege escalation
+    resources:
+      limits:
+        cpu: "500m"                        # ✅ CPU limit set
+        memory: "512Mi"                    # ✅ Memory limit set
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+
+---
+# POD 3: SECURE NGINX - Best practices
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-nginx
+  namespace: default
+  labels:
+    app: nginx
+    security: secure
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21.6                    # ✅ Specific version
+    securityContext:
+      runAsNonRoot: true                   # ✅ Not running as root
+      runAsUser: 1000                      # ✅ Non-root user
+      runAsGroup: 3000
+      allowPrivilegeEscalation: false      # ✅ No privilege escalation
+      readOnlyRootFilesystem: true         # ✅ Read-only filesystem
+      capabilities:
+        drop:
+        - ALL                              # ✅ Drop all capabilities
+    resources:
+      limits:
+        cpu: "500m"                        # ✅ Resource limits
+        memory: "512Mi"
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+    volumeMounts:
+    - name: cache
+      mountPath: /var/cache/nginx
+    - name: run
+      mountPath: /var/run
+  volumes:
+  - name: cache
+    emptyDir: {}
+  - name: run
+    emptyDir: {}
+
+---
+# POD 4: REDIS WITH HOST PATH - Dangerous mount
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-with-hostpath
+  namespace: default
+  labels:
+    app: redis
+spec:
+  hostNetwork: true                        # ❌ Using host network
+  containers:
+  - name: redis
+    image: redis                           # ❌ No tag specified
+    securityContext:
+      privileged: true                     # ❌ Privileged
+    volumeMounts:
+    - name: host-data
+      mountPath: /data
+  volumes:
+  - name: host-data
+    hostPath:                              # ❌ Mounting host filesystem
+      path: /var/lib/redis
+      type: DirectoryOrCreate
