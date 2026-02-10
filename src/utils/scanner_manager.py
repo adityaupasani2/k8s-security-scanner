@@ -8,8 +8,14 @@ from src.scanners import (
     RootUserScanner,
     PrivilegedScanner,
     PrivilegeEscalationScanner,
-    ReadOnlyFilesystemScanner
+    ReadOnlyFilesystemScanner,
 )
+from src.scanners.cpu_limits_scanner import CPULimitsScanner
+from src.scanners.memory_limits_scanner import MemoryLimitsScanner
+from src.scanners.resource_requests_scanner import ResourceRequestsScanner
+from src.scanners.latest_tag_scanner import LatestTagScanner
+from src.scanners.untagged_image_scanner import UntaggedImageScanner
+from src.scanners.image_registry_scanner import ImageRegistryScanner
 
 
 class ScannerManager:
@@ -20,10 +26,21 @@ class ScannerManager:
     def __init__(self):
         # Initialize all scanners
         self.scanners = [
+            # Pod Security (Day 2)
             RootUserScanner(),
             PrivilegedScanner(),
             PrivilegeEscalationScanner(),
             ReadOnlyFilesystemScanner(),
+            
+            # Resource Management (Day 3)
+            CPULimitsScanner(),
+            MemoryLimitsScanner(),
+            ResourceRequestsScanner(),
+            
+            # Image Security (Day 3)
+            LatestTagScanner(),
+            UntaggedImageScanner(),
+            ImageRegistryScanner(),
         ]
     
     def scan_pod(self, pod) -> List[Dict[str, Any]]:
@@ -82,3 +99,7 @@ class ScannerManager:
     def get_scanner_count(self) -> int:
         """Get number of active scanners"""
         return len(self.scanners)
+    
+    def get_scanner_names(self) -> List[str]:
+        """Get list of scanner names"""
+        return [scanner.__class__.__name__ for scanner in self.scanners]
