@@ -2,4 +2,7 @@
 Reports Package
 """
 
-__all__ = []
+from .table_reporter import TableReporter
+from .json_reporter import JSONReporter
+
+__all__ = ['TableReporter', 'JSONReporter']

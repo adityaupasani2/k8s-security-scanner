@@ -9,6 +9,7 @@ from kubernetes import client, config
 from colorama import init, Fore, Style
 import sys
 import os
+import json
 
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -17,6 +18,7 @@ from src.utils.scanner_manager import ScannerManager
 from src.utils.scoring import SecurityScorer
 from src.utils.compliance import ComplianceMapper
 from src.reports.table_reporter import TableReporter
+from src.reports.json_reporter import JSONReporter
 
 # Initialize colorama
 init(autoreset=True)
@@ -35,13 +37,18 @@ init(autoreset=True)
               help='Show detailed tables')
 @click.option('--save', '-s', type=str,
               help='Save report to file')
-def scan(namespace, output, all_namespaces, detailed, save):
+@click.option('--fail-on-critical', is_flag=True,
+              help='Exit with code 1 if CRITICAL issues found')
+@click.option('--min-score', type=int, default=0,
+              help='Minimum security score (0-100), fail if below')
+def scan(namespace, output, all_namespaces, detailed, save, fail_on_critical, min_score):
     """
     Scan Kubernetes cluster for security issues
     """
     
-    # Print banner
-    print_banner()
+    # Print banner (skip for JSON output)
+    if output != 'json':
+        print_banner()
     
     try:
         # Load Kubernetes configuration
@@ -52,14 +59,17 @@ def scan(namespace, output, all_namespaces, detailed, save):
         scanner_mgr = ScannerManager()
         scorer = SecurityScorer()
         
-        click.echo(f"{Fore.GREEN}✓ Loaded {scanner_mgr.get_scanner_count()} security scanners{Style.RESET_ALL}\n")
+        if output != 'json':
+            click.echo(f"{Fore.GREEN}✓ Loaded {scanner_mgr.get_scanner_count()} security scanners{Style.RESET_ALL}\n")
         
         # Determine namespaces to scan
         if all_namespaces:
-            click.echo(f"{Fore.CYAN}📡 Scanning ALL namespaces...{Style.RESET_ALL}\n")
+            if output != 'json':
+                click.echo(f"{Fore.CYAN}📡 Scanning ALL namespaces...{Style.RESET_ALL}\n")
             namespaces = [ns.metadata.name for ns in v1.list_namespace().items]
         else:
-            click.echo(f"{Fore.CYAN}📡 Scanning namespace: {namespace}{Style.RESET_ALL}\n")
+            if output != 'json':
+                click.echo(f"{Fore.CYAN}📡 Scanning namespace: {namespace}{Style.RESET_ALL}\n")
             namespaces = [namespace]
         
         # Collect all findings
@@ -82,7 +92,8 @@ def scan(namespace, output, all_namespaces, detailed, save):
                 
                 total_pods += len(pods.items)
                 
-                click.echo(f"{Fore.GREEN}✓ Found {len(pods.items)} pods in namespace '{ns}'{Style.RESET_ALL}")
+                if output != 'json':
+                    click.echo(f"{Fore.GREEN}✓ Found {len(pods.items)} pods in namespace '{ns}'{Style.RESET_ALL}")
                 
                 # Scan all pods in namespace
                 results = scanner_mgr.scan_pods(pods.items)
@@ -105,9 +116,11 @@ def scan(namespace, output, all_namespaces, detailed, save):
                 
             except client.exceptions.ApiException as e:
                 if e.status == 404:
-                    click.echo(f"{Fore.RED}✗ Namespace '{ns}' not found{Style.RESET_ALL}")
+                    if output != 'json':
+                        click.echo(f"{Fore.RED}✗ Namespace '{ns}' not found{Style.RESET_ALL}")
                 else:
-                    click.echo(f"{Fore.RED}✗ Error accessing namespace '{ns}': {e}{Style.RESET_ALL}")
+                    if output != 'json':
+                        click.echo(f"{Fore.RED}✗ Error accessing namespace '{ns}': {e}{Style.RESET_ALL}")
                 continue
         
         # Calculate overall scores
@@ -120,25 +133,68 @@ def scan(namespace, output, all_namespaces, detailed, save):
         mapper = ComplianceMapper()
         compliance_data = mapper.analyze_compliance(all_findings_list)
         
-        # Display results
-        if detailed:
-            print_detailed_results(
-                all_results, total_pods, overall_score, scorer,
-                pod_scores, compliance_data, all_findings_list
+        # Handle output format
+        if output == 'json':
+            json_reporter = JSONReporter(
+                all_findings_list,
+                pod_scores,
+                overall_score,
+                compliance_data,
+                namespace if not all_namespaces else 'all',
+                total_pods
             )
-        else:
-            print_results(all_results, total_pods, overall_score, scorer)
-            print_compliance_summary(all_results)
+            
+            report = json_reporter.generate_report()
+            
+            # Print JSON to stdout
+            print(json.dumps(report, indent=2))
+            
+            # Save to file if requested
+            if save:
+                json_reporter.save_to_file(save)
+            
+            # Exit with appropriate code
+            exit_code = json_reporter.get_exit_code()
+            
+            # Override exit code based on flags
+            if fail_on_critical and len(all_results['CRITICAL']) > 0:
+                sys.exit(1)
+            if min_score > 0 and overall_score['score'] < min_score:
+                sys.exit(1)
+            
+            sys.exit(exit_code)
         
-        # Save to file if requested
-        if save:
-            reporter = TableReporter(all_findings_list)
-            content = generate_full_report(
-                all_results, total_pods, overall_score,
-                pod_scores, compliance_data, all_findings_list, reporter
-            )
-            if reporter.save_to_file(save, content):
-                click.echo(f"\n{Fore.GREEN}✓ Report saved to {save}{Style.RESET_ALL}")
+        elif output == 'html':
+            click.echo(f"{Fore.YELLOW}HTML output coming in Day 10!{Style.RESET_ALL}")
+            sys.exit(0)
+        
+        else:  # table output
+            if detailed:
+                print_detailed_results(
+                    all_results, total_pods, overall_score, scorer,
+                    pod_scores, compliance_data, all_findings_list
+                )
+            else:
+                print_results(all_results, total_pods, overall_score, scorer)
+                print_compliance_summary(all_results)
+            
+            # Save to file if requested
+            if save:
+                reporter = TableReporter(all_findings_list)
+                content = generate_full_report(
+                    all_results, total_pods, overall_score,
+                    pod_scores, compliance_data, all_findings_list, reporter
+                )
+                if reporter.save_to_file(save, content):
+                    click.echo(f"\n{Fore.GREEN}✓ Report saved to {save}{Style.RESET_ALL}")
+            
+            # Exit with code based on flags
+            if fail_on_critical and len(all_results['CRITICAL']) > 0:
+                click.echo(f"\n{Fore.RED}✗ Exiting with code 1 (CRITICAL issues found){Style.RESET_ALL}")
+                sys.exit(1)
+            if min_score > 0 and overall_score['score'] < min_score:
+                click.echo(f"\n{Fore.RED}✗ Exiting with code 1 (score {overall_score['score']} < {min_score}){Style.RESET_ALL}")
+                sys.exit(1)
         
     except config.ConfigException:
         click.echo(f"{Fore.RED}✗ Could not load Kubernetes config{Style.RESET_ALL}")
@@ -244,24 +300,15 @@ def print_detailed_results(
     
     reporter = TableReporter(all_findings)
     
-    # Summary
     click.echo(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
     click.echo(f"{Fore.YELLOW}📊 DETAILED SCAN RESULTS{Style.RESET_ALL}")
     click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
     
-    # Summary table
     click.echo(reporter.generate_summary_table())
-    
-    # Findings table
     click.echo(reporter.generate_findings_table(max_rows=30))
-    
-    # Pod scores table
     click.echo(reporter.generate_pod_table(pod_scores))
-    
-    # Compliance table
     click.echo(reporter.generate_compliance_table(compliance_data))
     
-    # Overall score
     score = overall_score['score']
     grade = overall_score['grade']
     risk_level = overall_score['risk_level']
@@ -319,7 +366,7 @@ def print_compliance_summary(findings_by_severity):
         click.echo()
     
     click.echo(f"{Fore.YELLOW}💡 Run with --detailed for enhanced tables{Style.RESET_ALL}")
-    click.echo(f"{Fore.YELLOW}💡 Run with --save report.txt to export{Style.RESET_ALL}\n")
+    click.echo(f"{Fore.YELLOW}💡 Run with --output json for CI/CD integration{Style.RESET_ALL}\n")
 
 
 def generate_full_report(

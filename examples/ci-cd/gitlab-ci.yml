@@ -1,0 +1,92 @@
+# GitLab CI/CD Pipeline for Kubernetes Security Scanning
+# Save this as .gitlab-ci.yml
+
+stages:
+  - security-scan
+  - report
+
+variables:
+  SCANNER_VERSION: "1.0.0"
+  MIN_SECURITY_SCORE: "70"
+
+k8s-security-scan:
+  stage: security-scan
+  image: python:3.9
+  services:
+    - docker:dind
+  before_script:
+    # Install dependencies
+    - pip install -r requirements.txt
+    - apt-get update && apt-get install -y curl
+    
+    # Install kubectl
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+    
+    # Install kind
+    - curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+    - chmod +x ./kind
+    - mv ./kind /usr/local/bin/kind
+    
+    # Create cluster
+    - kind create cluster --name security-test
+    
+    # Deploy test workloads
+    - kubectl apply -f test-workloads/
+    - kubectl wait --for=condition=Ready pods --all -n default --timeout=60s
+  
+  script:
+    # Run security scan
+    - python src/main.py --namespace default --output json --save scan-results.json
+    
+    # Display summary
+    - |
+      python -c "
+      import json
+      with open('scan-results.json') as f:
+          results = json.load(f)
+      print(f\"Security Score: {results['summary']['security_score']}/100\")
+      print(f\"Grade: {results['summary']['grade']}\")
+      print(f\"Risk Level: {results['summary']['risk_level']}\")
+      print(f\"Critical Issues: {results['summary']['severity_breakdown']['critical']}\")
+      "
+    
+    # Check minimum score
+    - |
+      python -c "
+      import json, sys
+      with open('scan-results.json') as f:
+          results = json.load(f)
+      if results['summary']['security_score'] < ${MIN_SECURITY_SCORE}:
+          print(f\"FAIL: Security score {results['summary']['security_score']} below minimum ${MIN_SECURITY_SCORE}\")
+          sys.exit(1)
+      if results['summary']['severity_breakdown']['critical'] > 0:
+          print(f\"FAIL: {results['summary']['severity_breakdown']['critical']} critical issues found\")
+          sys.exit(1)
+      print('PASS: Security scan passed')
+      "
+  
+  artifacts:
+    paths:
+      - scan-results.json
+    reports:
+      # This allows GitLab to parse and display results
+      junit: scan-results.json
+    expire_in: 30 days
+  
+  allow_failure: false
+
+generate-report:
+  stage: report
+  image: python:3.9
+  dependencies:
+    - k8s-security-scan
+  script:
+    - pip install -r requirements.txt
+    - python src/main.py --namespace default --output html --save security-report.html || true
+  artifacts:
+    paths:
+      - security-report.html
+    expire_in: 30 days
+  when: always

@@ -1,0 +1,96 @@
+# GitHub Actions Workflow for Kubernetes Security Scanning
+# Save this as .github/workflows/k8s-security-scan.yml
+
+name: Kubernetes Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  security-scan:
+    name: Scan Kubernetes Manifests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install scanner
+        run: |
+          git clone https://github.com/YOUR_USERNAME/k8s-security-scanner.git
+          cd k8s-security-scanner
+          pip install -r requirements.txt
+      
+      - name: Set up test cluster
+        uses: helm/kind-action@v1.5.0
+        with:
+          cluster_name: security-test
+      
+      - name: Deploy test workloads
+        run: |
+          kubectl apply -f test-workloads/
+          kubectl wait --for=condition=Ready pods --all -n default --timeout=60s
+      
+      - name: Run security scan
+        id: scan
+        run: |
+          cd k8s-security-scanner
+          python src/main.py \
+            --namespace default \
+            --output json \
+            --save scan-results.json \
+            --fail-on-critical
+        continue-on-error: true
+      
+      - name: Upload scan results
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-scan-results
+          path: k8s-security-scanner/scan-results.json
+      
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('k8s-security-scanner/scan-results.json', 'utf8'));
+            
+            const summary = `## 🔒 Kubernetes Security Scan Results
+            
+            **Security Score:** ${results.summary.security_score}/100 (Grade: ${results.summary.grade})
+            **Risk Level:** ${results.summary.risk_level}
+            **Status:** ${results.summary.pass ? '✅ PASS' : '❌ FAIL'}
+            
+            ### Findings by Severity
+            - 🚨 Critical: ${results.summary.severity_breakdown.critical}
+            - ⚠️  High: ${results.summary.severity_breakdown.high}
+            - 🔵 Medium: ${results.summary.severity_breakdown.medium}
+            - ℹ️  Low: ${results.summary.severity_breakdown.low}
+            
+            [View full results in artifacts](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+      
+      - name: Fail if critical issues found
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "❌ Security scan failed - critical issues found"
+          exit 1
