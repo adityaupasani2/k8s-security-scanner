@@ -20,6 +20,12 @@ from src.scanners.secrets_in_env_scanner import SecretsInEnvScanner
 from src.scanners.host_network_scanner import HostNetworkScanner
 from src.scanners.host_path_scanner import HostPathScanner
 from src.scanners.host_namespaces_scanner import HostNamespacesScanner
+from src.scanners.capabilities_scanner import CapabilitiesScanner
+from src.scanners.default_service_account_scanner import DefaultServiceAccountScanner
+from src.scanners.missing_security_context_scanner import MissingSecurityContextScanner
+from src.scanners.automount_token_scanner import AutomountTokenScanner
+from src.scanners.apparmor_selinux_scanner import AppArmorSELinuxScanner
+from src.scanners.seccomp_scanner import SeccompScanner
 
 
 class ScannerManager:
@@ -51,6 +57,14 @@ class ScannerManager:
             HostNetworkScanner(),
             HostPathScanner(),
             HostNamespacesScanner(),
+            
+            # Advanced Security (Day 5)
+            CapabilitiesScanner(),
+            DefaultServiceAccountScanner(),
+            MissingSecurityContextScanner(),
+            AutomountTokenScanner(),
+            AppArmorSELinuxScanner(),
+            SeccompScanner(),
         ]
     
     def scan_pod(self, pod) -> List[Dict[str, Any]]:
@@ -113,3 +127,11 @@ class ScannerManager:
     def get_scanner_names(self) -> List[str]:
         """Get list of scanner names"""
         return [scanner.__class__.__name__ for scanner in self.scanners]
+    
+    def get_scanner_categories(self) -> Dict[str, int]:
+        """Get count of scanners by category"""
+        categories = {}
+        for scanner in self.scanners:
+            category = scanner._get_category()
+            categories[category] = categories.get(category, 0) + 1
+        return categories
