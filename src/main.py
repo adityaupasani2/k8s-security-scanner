@@ -14,6 +14,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.utils.scanner_manager import ScannerManager
+from src.utils.scoring import SecurityScorer
 
 # Initialize colorama
 init(autoreset=True)
@@ -41,8 +42,10 @@ def scan(namespace, output, all_namespaces):
         config.load_kube_config()
         v1 = client.CoreV1Api()
         
-        # Initialize scanner manager
+        # Initialize scanner manager and scorer
         scanner_mgr = ScannerManager()
+        scorer = SecurityScorer()
+        
         click.echo(f"{Fore.GREEN}✓ Loaded {scanner_mgr.get_scanner_count()} security scanners{Style.RESET_ALL}\n")
         
         # Determine namespaces to scan
@@ -61,6 +64,7 @@ def scan(namespace, output, all_namespaces):
             'LOW': []
         }
         total_pods = 0
+        pod_scores = []
         
         # Scan each namespace
         for ns in namespaces:
@@ -77,6 +81,16 @@ def scan(namespace, output, all_namespaces):
                 # Scan all pods in namespace
                 results = scanner_mgr.scan_pods(pods.items)
                 
+                # Calculate pod scores
+                for pod in pods.items:
+                    pod_findings = scanner_mgr.scan_pod(pod)
+                    pod_score = scorer.calculate_pod_score(pod_findings)
+                    pod_scores.append({
+                        'name': pod.metadata.name,
+                        'namespace': ns,
+                        **pod_score
+                    })
+                
                 # Merge results
                 for severity in all_results.keys():
                     all_results[severity].extend(
@@ -90,8 +104,15 @@ def scan(namespace, output, all_namespaces):
                     click.echo(f"{Fore.RED}✗ Error accessing namespace '{ns}': {e}{Style.RESET_ALL}")
                 continue
         
+        # Calculate overall scores
+        total_findings = sum(len(findings) for findings in all_results.values())
+        overall_score = scorer.calculate_pod_score(
+            all_results['CRITICAL'] + all_results['HIGH'] + 
+            all_results['MEDIUM'] + all_results['LOW']
+        )
+        
         # Display results
-        print_results(all_results, total_pods)
+        print_results(all_results, total_pods, overall_score, scorer)
         
     except config.ConfigException:
         click.echo(f"{Fore.RED}✗ Could not load Kubernetes config{Style.RESET_ALL}")
@@ -119,7 +140,7 @@ def print_banner():
     click.echo(banner)
 
 
-def print_results(findings_by_severity, total_pods):
+def print_results(findings_by_severity, total_pods, overall_score, scorer):
     """Print scan results to terminal"""
     
     # Calculate totals
@@ -167,37 +188,35 @@ def print_results(findings_by_severity, total_pods):
             
             click.echo()
     
-    # Security score (simple calculation for now)
-    if total_findings == 0:
-        score = 100
-        grade = "A+"
-        color = Fore.GREEN
+    # Enhanced security score display
+    score = overall_score['score']
+    grade = overall_score['grade']
+    risk_level = overall_score['risk_level']
+    
+    # Color based on score
+    if score >= 80:
+        score_color = Fore.GREEN
+    elif score >= 60:
+        score_color = Fore.YELLOW
     else:
-        # Deduct points based on severity
-        deductions = (
-            len(findings_by_severity['CRITICAL']) * 15 +
-            len(findings_by_severity['HIGH']) * 8 +
-            len(findings_by_severity['MEDIUM']) * 3 +
-            len(findings_by_severity['LOW']) * 1
-        )
-        score = max(0, 100 - deductions)
-        
-        if score >= 90:
-            grade = "A"
-            color = Fore.GREEN
-        elif score >= 75:
-            grade = "B"
-            color = Fore.CYAN
-        elif score >= 60:
-            grade = "C"
-            color = Fore.YELLOW
-        else:
-            grade = "F"
-            color = Fore.RED
+        score_color = Fore.RED
     
     click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
-    click.echo(f"{color}Security Score: {score}/100 (Grade: {grade}){Style.RESET_ALL}")
+    click.echo(f"{score_color}Security Score: {score}/100 (Grade: {grade}){Style.RESET_ALL}")
+    click.echo(f"{score_color}Risk Level: {risk_level}{Style.RESET_ALL}")
     click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+    
+    # Get and display recommendations
+    recommendations = scorer.get_recommendations(
+        score,
+        overall_score['severity_breakdown']
+    )
+    
+    if recommendations:
+        click.echo(f"{Fore.YELLOW}📋 Recommendations:{Style.RESET_ALL}")
+        for rec in recommendations:
+            click.echo(f"  {rec}")
+        click.echo()
     
     if total_findings > 0:
         click.echo(f"{Fore.YELLOW}💡 Run with --output json or --output html for detailed reports{Style.RESET_ALL}\n")
@@ -205,3 +224,46 @@ def print_results(findings_by_severity, total_pods):
 
 if __name__ == '__main__':
     scan()
+
+def print_compliance_summary(findings_by_severity):
+    """Print compliance framework summary"""
+    from src.utils.compliance import ComplianceMapper
+    
+    mapper = ComplianceMapper()
+    
+    # Flatten all findings
+    all_findings = []
+    for findings in findings_by_severity.values():
+        all_findings.extend(findings)
+    
+    if not all_findings:
+        return
+    
+    compliance = mapper.analyze_compliance(all_findings)
+    
+    if compliance['total_frameworks_affected'] == 0:
+        return
+    
+    click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+    click.echo(f"{Fore.YELLOW}📋 COMPLIANCE SUMMARY{Style.RESET_ALL}")
+    click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+    
+    for framework, data in compliance['framework_scores'].items():
+        full_name = mapper.get_framework_name(framework)
+        pct = data['compliance_percentage']
+        status = data['status']
+        
+        # Color based on compliance
+        if status == 'COMPLIANT':
+            color = Fore.GREEN
+        elif status == 'MOSTLY_COMPLIANT':
+            color = Fore.YELLOW
+        else:
+            color = Fore.RED
+        
+        click.echo(f"{color}{framework}{Style.RESET_ALL} - {full_name}")
+        click.echo(f"  Compliance: {color}{pct}%{Style.RESET_ALL} ({status})")
+        click.echo(f"  Violations: {data['total_violations']} "
+                   f"(Critical: {data['critical_violations']}, "
+                   f"High: {data['high_violations']})")
+        click.echo()
