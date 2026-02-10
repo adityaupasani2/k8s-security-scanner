@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.utils.scanner_manager import ScannerManager
 from src.utils.scoring import SecurityScorer
+from src.utils.compliance import ComplianceMapper
+from src.reports.table_reporter import TableReporter
 
 # Initialize colorama
 init(autoreset=True)
@@ -29,7 +31,11 @@ init(autoreset=True)
               help='Output format (default: table)')
 @click.option('--all-namespaces', '-A', is_flag=True,
               help='Scan all namespaces')
-def scan(namespace, output, all_namespaces):
+@click.option('--detailed', '-d', is_flag=True,
+              help='Show detailed tables')
+@click.option('--save', '-s', type=str,
+              help='Save report to file')
+def scan(namespace, output, all_namespaces, detailed, save):
     """
     Scan Kubernetes cluster for security issues
     """
@@ -105,14 +111,34 @@ def scan(namespace, output, all_namespaces):
                 continue
         
         # Calculate overall scores
-        total_findings = sum(len(findings) for findings in all_results.values())
-        overall_score = scorer.calculate_pod_score(
-            all_results['CRITICAL'] + all_results['HIGH'] + 
-            all_results['MEDIUM'] + all_results['LOW']
-        )
+        all_findings_list = (all_results['CRITICAL'] + all_results['HIGH'] + 
+                            all_results['MEDIUM'] + all_results['LOW'])
+        
+        overall_score = scorer.calculate_pod_score(all_findings_list)
+        
+        # Get compliance data
+        mapper = ComplianceMapper()
+        compliance_data = mapper.analyze_compliance(all_findings_list)
         
         # Display results
-        print_results(all_results, total_pods, overall_score, scorer)
+        if detailed:
+            print_detailed_results(
+                all_results, total_pods, overall_score, scorer,
+                pod_scores, compliance_data, all_findings_list
+            )
+        else:
+            print_results(all_results, total_pods, overall_score, scorer)
+            print_compliance_summary(all_results)
+        
+        # Save to file if requested
+        if save:
+            reporter = TableReporter(all_findings_list)
+            content = generate_full_report(
+                all_results, total_pods, overall_score,
+                pod_scores, compliance_data, all_findings_list, reporter
+            )
+            if reporter.save_to_file(save, content):
+                click.echo(f"\n{Fore.GREEN}✓ Report saved to {save}{Style.RESET_ALL}")
         
     except config.ConfigException:
         click.echo(f"{Fore.RED}✗ Could not load Kubernetes config{Style.RESET_ALL}")
@@ -141,9 +167,8 @@ def print_banner():
 
 
 def print_results(findings_by_severity, total_pods, overall_score, scorer):
-    """Print scan results to terminal"""
+    """Print standard scan results"""
     
-    # Calculate totals
     total_findings = sum(len(findings) for findings in findings_by_severity.values())
     
     click.echo(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
@@ -153,7 +178,6 @@ def print_results(findings_by_severity, total_pods, overall_score, scorer):
     click.echo(f"Total pods scanned: {total_pods}")
     click.echo(f"Total issues found: {total_findings}\n")
     
-    # Print findings by severity
     severity_colors = {
         'CRITICAL': Fore.RED,
         'HIGH': Fore.YELLOW,
@@ -178,7 +202,6 @@ def print_results(findings_by_severity, total_pods, overall_score, scorer):
             
             click.echo(f"{color}{icon} {severity} Issues: {count}{Style.RESET_ALL}")
             
-            # Show first 3 findings of each severity
             for finding in findings[:3]:
                 click.echo(f"  {color}├─{Style.RESET_ALL} {finding['pod_name']}/{finding['container_name']}")
                 click.echo(f"  {color}│{Style.RESET_ALL}  {finding['issue']}")
@@ -188,12 +211,10 @@ def print_results(findings_by_severity, total_pods, overall_score, scorer):
             
             click.echo()
     
-    # Enhanced security score display
     score = overall_score['score']
     grade = overall_score['grade']
     risk_level = overall_score['risk_level']
     
-    # Color based on score
     if score >= 80:
         score_color = Fore.GREEN
     elif score >= 60:
@@ -206,32 +227,62 @@ def print_results(findings_by_severity, total_pods, overall_score, scorer):
     click.echo(f"{score_color}Risk Level: {risk_level}{Style.RESET_ALL}")
     click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
     
-    # Get and display recommendations
-    recommendations = scorer.get_recommendations(
-        score,
-        overall_score['severity_breakdown']
-    )
+    recommendations = scorer.get_recommendations(score, overall_score['severity_breakdown'])
     
     if recommendations:
         click.echo(f"{Fore.YELLOW}📋 Recommendations:{Style.RESET_ALL}")
         for rec in recommendations:
             click.echo(f"  {rec}")
         click.echo()
+
+
+def print_detailed_results(
+    findings_by_severity, total_pods, overall_score, scorer,
+    pod_scores, compliance_data, all_findings
+):
+    """Print detailed results with tables"""
     
-    if total_findings > 0:
-        click.echo(f"{Fore.YELLOW}💡 Run with --output json or --output html for detailed reports{Style.RESET_ALL}\n")
+    reporter = TableReporter(all_findings)
+    
+    # Summary
+    click.echo(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+    click.echo(f"{Fore.YELLOW}📊 DETAILED SCAN RESULTS{Style.RESET_ALL}")
+    click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+    
+    # Summary table
+    click.echo(reporter.generate_summary_table())
+    
+    # Findings table
+    click.echo(reporter.generate_findings_table(max_rows=30))
+    
+    # Pod scores table
+    click.echo(reporter.generate_pod_table(pod_scores))
+    
+    # Compliance table
+    click.echo(reporter.generate_compliance_table(compliance_data))
+    
+    # Overall score
+    score = overall_score['score']
+    grade = overall_score['grade']
+    risk_level = overall_score['risk_level']
+    
+    if score >= 80:
+        score_color = Fore.GREEN
+    elif score >= 60:
+        score_color = Fore.YELLOW
+    else:
+        score_color = Fore.RED
+    
+    click.echo(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+    click.echo(f"{score_color}Overall Security Score: {score}/100 (Grade: {grade}){Style.RESET_ALL}")
+    click.echo(f"{score_color}Risk Level: {risk_level}{Style.RESET_ALL}")
+    click.echo(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
 
-
-if __name__ == '__main__':
-    scan()
 
 def print_compliance_summary(findings_by_severity):
     """Print compliance framework summary"""
-    from src.utils.compliance import ComplianceMapper
-    
     mapper = ComplianceMapper()
     
-    # Flatten all findings
     all_findings = []
     for findings in findings_by_severity.values():
         all_findings.extend(findings)
@@ -253,7 +304,6 @@ def print_compliance_summary(findings_by_severity):
         pct = data['compliance_percentage']
         status = data['status']
         
-        # Color based on compliance
         if status == 'COMPLIANT':
             color = Fore.GREEN
         elif status == 'MOSTLY_COMPLIANT':
@@ -267,3 +317,39 @@ def print_compliance_summary(findings_by_severity):
                    f"(Critical: {data['critical_violations']}, "
                    f"High: {data['high_violations']})")
         click.echo()
+    
+    click.echo(f"{Fore.YELLOW}💡 Run with --detailed for enhanced tables{Style.RESET_ALL}")
+    click.echo(f"{Fore.YELLOW}💡 Run with --save report.txt to export{Style.RESET_ALL}\n")
+
+
+def generate_full_report(
+    findings_by_severity, total_pods, overall_score,
+    pod_scores, compliance_data, all_findings, reporter
+):
+    """Generate complete report text"""
+    
+    report_parts = [
+        "KUBERNETES SECURITY SCAN REPORT",
+        "=" * 60,
+        "",
+        f"Total pods scanned: {total_pods}",
+        f"Total issues found: {len(all_findings)}",
+        "",
+        reporter.generate_summary_table(),
+        "",
+        reporter.generate_findings_table(max_rows=50),
+        "",
+        reporter.generate_pod_table(pod_scores),
+        "",
+        reporter.generate_compliance_table(compliance_data),
+        "",
+        f"Overall Security Score: {overall_score['score']}/100 (Grade: {overall_score['grade']})",
+        f"Risk Level: {overall_score['risk_level']}",
+        ""
+    ]
+    
+    return "\n".join(report_parts)
+
+
+if __name__ == '__main__':
+    scan()
