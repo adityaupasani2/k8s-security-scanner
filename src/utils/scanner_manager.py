@@ -16,6 +16,10 @@ from src.scanners.resource_requests_scanner import ResourceRequestsScanner
 from src.scanners.latest_tag_scanner import LatestTagScanner
 from src.scanners.untagged_image_scanner import UntaggedImageScanner
 from src.scanners.image_registry_scanner import ImageRegistryScanner
+from src.scanners.secrets_in_env_scanner import SecretsInEnvScanner
+from src.scanners.host_network_scanner import HostNetworkScanner
+from src.scanners.host_path_scanner import HostPathScanner
+from src.scanners.host_namespaces_scanner import HostNamespacesScanner
 
 
 class ScannerManager:
@@ -41,6 +45,12 @@ class ScannerManager:
             LatestTagScanner(),
             UntaggedImageScanner(),
             ImageRegistryScanner(),
+            
+            # Secrets & Network Security (Day 4)
+            SecretsInEnvScanner(),
+            HostNetworkScanner(),
+            HostPathScanner(),
+            HostNamespacesScanner(),
         ]
     
     def scan_pod(self, pod) -> List[Dict[str, Any]]:
