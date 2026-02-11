@@ -10,6 +10,7 @@ from colorama import init, Fore, Style
 import sys
 import os
 import json
+from datetime import datetime
 
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -28,7 +29,7 @@ init(autoreset=True)
 @click.option('--namespace', '-n', default='default', 
               help='Namespace to scan (default: default)')
 @click.option('--output', '-o', 
-              type=click.Choice(['table', 'json', 'html'], case_sensitive=False),
+              type=click.Choice(['table', 'json'], case_sensitive=False),
               default='table',
               help='Output format (default: table)')
 @click.option('--all-namespaces', '-A', is_flag=True,
@@ -164,9 +165,7 @@ def scan(namespace, output, all_namespaces, detailed, save, fail_on_critical, mi
             
             sys.exit(exit_code)
         
-        elif output == 'html':
-            click.echo(f"{Fore.YELLOW}HTML output coming in Day 10!{Style.RESET_ALL}")
-            sys.exit(0)
+        # HTML output would go here (skipped for this version)
         
         else:  # table output
             if detailed:
@@ -366,7 +365,7 @@ def print_compliance_summary(findings_by_severity):
         click.echo()
     
     click.echo(f"{Fore.YELLOW}💡 Run with --detailed for enhanced tables{Style.RESET_ALL}")
-    click.echo(f"{Fore.YELLOW}💡 Run with --output json for CI/CD integration{Style.RESET_ALL}\n")
+    click.echo(f"{Fore.YELLOW}💡 Run with --output html for visual report{Style.RESET_ALL}\n")
 
 
 def generate_full_report(
