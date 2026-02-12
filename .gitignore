@@ -1,20 +1,17 @@
 # Python
-venv/
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
+*$py.class
 *.so
-*.egg
+.Python
+venv/
+env/
+ENV/
 *.egg-info/
 dist/
 build/
-.pytest_cache/
-.coverage
-htmlcov/
 
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
@@ -25,13 +22,16 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Test files
-test_k8s_connection.py
-
-# Reports 
+# Project specific
+*.log
+*.txt
 *.html
 *.json
-report_*
+security-report.*
+scan-results.*
+report.*
+audit-*
 
-# Kubernetes
-*.kubeconfig
+# Keep examples
+!examples/**/*.yml
+!examples/**/*.md
